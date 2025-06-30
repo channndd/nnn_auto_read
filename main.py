@@ -41,6 +41,29 @@ def cal_hash(input_string):
 
     return hex(_7032f5 + _cc1055)[2:].lower()
 
+def retry_decorator(max_retries=3, retry_delay=2):
+    """重试装饰器
+    Args:
+        max_retries: 最大重试次数
+        retry_delay: 重试间隔(秒)
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.RequestException as e:
+                    retries += 1
+                    if retries >= max_retries:
+                        logging.error(f"❌ 请求失败，已达到最大重试次数: {e}")
+                        raise
+                    logging.warning(f"⚠️ 请求失败，正在进行第 {retries} 次重试: {e}")
+                    time.sleep(retry_delay * (2 ** (retries - 1)))  # 指数退避策略
+        return wrapper
+    return decorator
+
+@retry_decorator(max_retries=3, retry_delay=2)
 def get_wr_skey():
     """刷新cookie密钥"""
     response = requests.post(RENEW_URL, headers=headers, cookies=cookies,
@@ -50,6 +73,7 @@ def get_wr_skey():
             return cookie.split('=')[-1][:8]
     return None
 
+@retry_decorator(max_retries=3, retry_delay=2)
 def fix_no_synckey():
     requests.post(FIX_SYNCKEY_URL, headers=headers, cookies=cookies,
                              data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')))
@@ -66,6 +90,12 @@ def refresh_cookie():
         logging.error(ERROR_CODE)
         push(ERROR_CODE, PUSH_METHOD)
         raise Exception(ERROR_CODE)
+
+@retry_decorator(max_retries=3, retry_delay=2)
+def post_read_request(data):
+    """发送阅读请求"""
+    response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
+    return response.json()
 
 refresh_cookie()
 index = 1
@@ -84,8 +114,7 @@ while index <= READ_NUM:
 
     logging.info(f"⏱️ 尝试第 {index} 次阅读...")
     logging.info(f"📕 data: {data}")
-    response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
-    resData = response.json()
+    resData = post_read_request(data)
     logging.info(f"📕 response: {resData}")
 
     if 'succ' in resData:
