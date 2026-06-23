@@ -8,7 +8,7 @@ import hashlib
 import requests
 import urllib.parse
 from push import push
-from config import data, headers, cookies, READ_NUM, PUSH_METHOD, book, chapter
+from config import data, headers, cookies, READ_NUM, PUSH_METHOD, BOOKS, BOOK_READ_COUNT, BOOK_READ_COUNTS, SWITCH_MODE, SWITCH_BASE_PROB, SWITCH_PROB_INCREASE
 
 # 配置日志格式
 logger = logging.getLogger(__name__)
@@ -97,13 +97,63 @@ def post_read_request(data):
     response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
     return response.json()
 
+
+def _get_book_target_count(book_id):
+    """获取指定书籍的目标阅读次数，支持按书配置和全局默认"""
+    config = BOOK_READ_COUNTS.get(book_id)
+    if config is not None:
+        if isinstance(config, (list, tuple)) and len(config) == 2:
+            return random.randint(config[0], config[1])
+        return int(config)
+    return BOOK_READ_COUNT
+
+
+def _should_switch_book(consecutive_count):
+    """基于概率判断是否应该换书，越读越久越容易换"""
+    prob = min(SWITCH_BASE_PROB + consecutive_count * SWITCH_PROB_INCREASE, 0.5)
+    result = random.random() < prob
+    if result:
+        logging.info(f"🎲 概率触发换书 (当前已连续 {consecutive_count} 次，概率: {prob:.1%})")
+    return result
+
+
+def _switch_book():
+    """随机切换到另一本书"""
+    new_book = random.choice(list(BOOKS.keys()))
+    logging.info(f"📚 换书，当前书籍：{new_book}")
+    return new_book, BOOKS[new_book]
+
 refresh_cookie()
 index = 1
 lastTime = int(time.time()) - 30
+
+# 初始化当前书籍
+_current_book = random.choice(list(BOOKS.keys()))
+_current_chapters = BOOKS[_current_book]
+_book_read_count = 0
+
 while index <= READ_NUM:
     data.pop('s')
-    data['b'] = random.choice(book)
-    data['c'] = random.choice(chapter)
+
+    # 判断是否需要换书
+    need_switch = False
+    if SWITCH_MODE == 'prob':
+        # 概率换书模式：基于连续阅读次数计算换书概率
+        need_switch = _should_switch_book(_book_read_count)
+    else:
+        # 固定次数换书模式：每本书读够目标次数后换书
+        target_count = _get_book_target_count(_current_book)
+        if _book_read_count >= target_count:
+            need_switch = True
+            logging.info(f"📚 阅读次数达到 {target_count}，准备换书")
+
+    if need_switch:
+        _current_book, _current_chapters = _switch_book()
+        _book_read_count = 0
+
+    data['b'] = _current_book
+    data['c'] = random.choice(_current_chapters)
+    _book_read_count += 1
     thisTime = int(time.time())
     data['ct'] = thisTime
     data['rt'] = thisTime - lastTime
