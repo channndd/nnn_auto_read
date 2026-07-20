@@ -117,11 +117,37 @@ def _should_switch_book(consecutive_count):
     return result
 
 
-def _switch_book():
-    """随机切换到另一本书"""
-    new_book = random.choice(list(BOOKS.keys()))
+def _switch_book(current_book_id):
+    """随机切换到另一本书（避免选到当前书）"""
+    all_books = list(BOOKS.keys())
+    if len(all_books) > 1:
+        # 有多本书时，排除当前书
+        other_books = [b for b in all_books if b != current_book_id]
+        new_book = random.choice(other_books)
+    else:
+        # 只有一本书，只能读这本
+        new_book = all_books[0]
     logging.info(f"📚 换书，当前书籍：{new_book}")
     return new_book, BOOKS[new_book]
+
+
+def _pick_chapter(chapters, current_index):
+    """选择章节：80%按顺序翻页，20%随机跳章"""
+    if random.random() < 0.8:
+        # 按顺序翻页
+        next_index = current_index + 1
+        if next_index >= len(chapters):
+            # 到最后一章了，随机跳回
+            next_index = random.randint(0, len(chapters) - 1)
+            logging.info(f"📖 已到最后一章，随机跳至第 {next_index + 1} 章")
+        else:
+            logging.info(f"📖 顺序翻页至第 {next_index + 1} 章")
+        return next_index, chapters[next_index]
+    else:
+        # 随机跳章
+        random_index = random.randint(0, len(chapters) - 1)
+        logging.info(f"📖 随机跳至第 {random_index + 1} 章")
+        return random_index, chapters[random_index]
 
 refresh_cookie()
 index = 1
@@ -130,6 +156,7 @@ lastTime = int(time.time()) - 30
 # 初始化当前书籍
 _current_book = random.choice(list(BOOKS.keys()))
 _current_chapters = BOOKS[_current_book]
+_chapter_index = random.randint(0, len(_current_chapters) - 1)
 _book_read_count = 0
 
 while index <= READ_NUM:
@@ -148,11 +175,12 @@ while index <= READ_NUM:
             logging.info(f"📚 阅读次数达到 {target_count}，准备换书")
 
     if need_switch:
-        _current_book, _current_chapters = _switch_book()
+        _current_book, _current_chapters = _switch_book(_current_book)
+        _chapter_index = random.randint(0, len(_current_chapters) - 1)  # 换书时随机起始章节
         _book_read_count = 0
 
     data['b'] = _current_book
-    data['c'] = random.choice(_current_chapters)
+    _chapter_index, data['c'] = _pick_chapter(_current_chapters, _chapter_index)
     _book_read_count += 1
     thisTime = int(time.time())
     data['ct'] = thisTime
