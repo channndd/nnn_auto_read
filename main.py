@@ -16,7 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - 
 
 # 加密盐及其它默认值
 KEY = "3c5c8717f3daf09iop3423zafeqoi"
-COOKIE_DATA = {"rq": "%2Fweb%2Fbook%2Fread"}
+# 刷新 wr_skey 的请求体变体，WeRead 对不同账号/版本要求不同，依次尝试
+COOKIE_DATA_VARIANTS = [
+    {"rq": "%2Fweb%2Fbook%2Fread", "ql": False},
+    {"rq": "%2Fweb%2Fbook%2Fread", "ql": True},
+    {"rq": "%2Fweb%2Fbook%2Fread"},
+]
+REQUEST_TIMEOUT = 30
 READ_URL = "https://weread.qq.com/web/book/read"
 RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
@@ -65,36 +71,55 @@ def retry_decorator(max_retries=3, retry_delay=2):
 
 @retry_decorator(max_retries=3, retry_delay=2)
 def get_wr_skey():
-    """刷新cookie密钥"""
-    response = requests.post(RENEW_URL, headers=headers, cookies=cookies,
-                             data=json.dumps(COOKIE_DATA, separators=(',', ':')))
-    for cookie in response.headers.get('Set-Cookie', '').split(';'):
-        if "wr_skey" in cookie:
-            return cookie.split('=')[-1][:8]
+    """刷新cookie密钥，依次尝试多种请求体，兼容不同账号"""
+    for cookie_data in COOKIE_DATA_VARIANTS:
+        try:
+            response = requests.post(
+                RENEW_URL, headers=headers, cookies=cookies,
+                data=json.dumps(cookie_data, separators=(',', ':')),
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"⚠️ 刷新密钥请求失败: {e}")
+            continue
+
+        new_skey = response.cookies.get('wr_skey')
+        if new_skey:
+            return new_skey[:8]
+        logging.warning(f"⚠️ 刷新密钥未获取到 wr_skey: {response.text[:200]}")
+
     return None
 
 @retry_decorator(max_retries=3, retry_delay=2)
 def fix_no_synckey():
     requests.post(FIX_SYNCKEY_URL, headers=headers, cookies=cookies,
-                             data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')))
+                             data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')),
+                             timeout=REQUEST_TIMEOUT)
 
-def refresh_cookie():
+def refresh_cookie(strict=True):
     logging.info(f"🍪 刷新cookie")
     new_skey = get_wr_skey()
     if new_skey:
         cookies['wr_skey'] = new_skey
         logging.info(f"✅ 密钥刷新成功，新密钥：{new_skey}")
         logging.info(f"🔄 重新本次阅读。")
-    else:
+        return True
+
+    if strict:
         ERROR_CODE = "❌ 无法获取新密钥或者WXREAD_CURL_BASH配置有误，终止运行。"
         logging.error(ERROR_CODE)
         push(ERROR_CODE, PUSH_METHOD)
         raise Exception(ERROR_CODE)
 
+    logging.warning("⚠️ 密钥刷新失败，继续使用现有 cookie 尝试阅读。")
+    return False
+
 @retry_decorator(max_retries=3, retry_delay=2)
 def post_read_request(data):
     """发送阅读请求"""
-    response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
+    response = requests.post(READ_URL, headers=headers, cookies=cookies,
+                             data=json.dumps(data, separators=(',', ':')),
+                             timeout=REQUEST_TIMEOUT)
     return response.json()
 
 
@@ -149,7 +174,7 @@ def _pick_chapter(chapters, current_index):
         logging.info(f"📖 随机跳至第 {random_index + 1} 章")
         return random_index, chapters[random_index]
 
-refresh_cookie()
+refresh_cookie(strict=False)
 index = 1
 lastTime = int(time.time()) - 30
 
