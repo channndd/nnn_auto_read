@@ -2,6 +2,7 @@
 import os
 import re
 import random
+import shlex
 
 """
 可修改区域：
@@ -15,6 +16,26 @@ def _fluctuate(base, fluctuation_percent):
         return base
     factor = 1 + random.uniform(-fluctuation_percent / 100, fluctuation_percent / 100)
     return max(1, round(base * factor))
+
+
+def _env_bool(name, default):
+    """解析布尔环境变量，未配置时使用默认值"""
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_secret_file(path):
+    """读取敏感配置文件，不在异常信息中输出文件内容"""
+    if not path:
+        return ""
+    expanded = os.path.expandvars(os.path.expanduser(path))
+    try:
+        with open(expanded, "r", encoding="utf-8") as secret_file:
+            return secret_file.read().strip()
+    except OSError as exc:
+        raise ValueError(f"无法读取敏感配置文件：{expanded}") from exc
 
 # ============================================================
 # 核心环境变量（只有这3个需要关注）
@@ -43,8 +64,8 @@ SWITCH_PROB_INCREASE = 0.02  # 每连续读一次增加 2%，上限 50%
 # 按书籍配置阅读次数（代码内配置，非环境变量）
 # 格式: "book_id": 次数 或 "book_id": (min, max)
 BOOK_READ_COUNTS = {}
-# 需要推送时可选，可选pushplus、wxpusher、telegram
-PUSH_METHOD = "" or os.getenv('PUSH_METHOD')
+# 需要推送时可选，支持单渠道或多渠道，例如：email,telegram
+PUSH_METHOD = "" or os.getenv("PUSH_METHODS") or os.getenv("PUSH_METHOD")
 # pushplus推送时需填
 PUSHPLUS_TOKEN = "" or os.getenv("PUSHPLUS_TOKEN")
 # telegram推送时需填
@@ -52,6 +73,38 @@ TELEGRAM_BOT_TOKEN = "" or os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = "" or os.getenv("TELEGRAM_CHAT_ID")
 # wxpusher推送时需填
 WXPUSHER_SPT = "" or os.getenv("WXPUSHER_SPT")
+
+# email推送时支持 provider 预设：qq、163、gmail、outlook、custom
+EMAIL_PROVIDER = (os.getenv("EMAIL_PROVIDER") or "custom").strip().lower()
+_EMAIL_PROVIDER_PRESETS = {
+    "qq": {"host": "smtp.qq.com", "port": 587, "tls": True, "ssl": False},
+    "163": {"host": "smtp.163.com", "port": 587, "tls": True, "ssl": False},
+    "gmail": {"host": "smtp.gmail.com", "port": 587, "tls": True, "ssl": False},
+    "outlook": {"host": "smtp.office365.com", "port": 587, "tls": True, "ssl": False},
+    "custom": {"host": "", "port": 587, "tls": True, "ssl": False},
+}
+if EMAIL_PROVIDER not in _EMAIL_PROVIDER_PRESETS:
+    raise ValueError(
+        "EMAIL_PROVIDER 仅支持：qq、163、gmail、outlook、custom"
+    )
+_EMAIL_PRESET = _EMAIL_PROVIDER_PRESETS[EMAIL_PROVIDER]
+
+# SMTP 基础配置；已有环境变量优先于 provider 预设
+EMAIL_SMTP_HOST = "" or os.getenv("EMAIL_SMTP_HOST") or _EMAIL_PRESET["host"]
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT") or _EMAIL_PRESET["port"])
+EMAIL_SMTP_USERNAME = "" or os.getenv("EMAIL_SMTP_USERNAME")
+EMAIL_SMTP_USE_TLS = _env_bool("EMAIL_SMTP_USE_TLS", _EMAIL_PRESET["tls"])
+EMAIL_SMTP_USE_SSL = _env_bool("EMAIL_SMTP_USE_SSL", _EMAIL_PRESET["ssl"])
+# 密码文件优先于环境变量，适合 Docker Secret/只读挂载文件
+EMAIL_SMTP_PASSWORD_FILE = "" or os.getenv("EMAIL_SMTP_PASSWORD_FILE")
+EMAIL_SMTP_PASSWORD = (
+    _read_secret_file(EMAIL_SMTP_PASSWORD_FILE)
+    if EMAIL_SMTP_PASSWORD_FILE
+    else "" or os.getenv("EMAIL_SMTP_PASSWORD")
+)
+# 发件人默认使用登录账号，收件人默认使用发件人
+EMAIL_FROM = "" or os.getenv("EMAIL_FROM") or EMAIL_SMTP_USERNAME
+EMAIL_TO = "" or os.getenv("EMAIL_TO") or EMAIL_FROM
 # read接口的bash命令，本地部署时可对应替换headers、cookies
 curl_str = os.getenv('WXREAD_CURL_BASH')
 
@@ -111,38 +164,101 @@ data = {
 }
 
 
-def convert(curl_command):
-    """提取bash接口中的headers与cookies
-    支持 -H 'Cookie: xxx' 和 -b 'xxx' 两种方式的cookie提取
-    """
-    # 提取 headers
-    headers_temp = {}
-    for match in re.findall(r"-H '([^:]+): ([^']+)'", curl_command):
-        headers_temp[match[0]] = match[1]
+def _parse_curl_args(curl_command):
+    """将 Bash/cURL 命令拆分为参数，兼容单双引号、换行和常见长/短参数"""
+    try:
+        return shlex.split(curl_command, posix=True)
+    except ValueError as exc:
+        raise ValueError(f"WXREAD_CURL_BASH 引号或转义格式有误：{exc}") from exc
 
-    # 提取 cookies
+
+def _take_option_value(tokens, index, short_option, long_option):
+    """读取命令行选项值，支持 --header=xxx、-H xxx 和 -Hxxx"""
+    token = tokens[index]
+    if token in (short_option, long_option):
+        if index + 1 >= len(tokens):
+            raise ValueError(f"WXREAD_CURL_BASH 中 {token} 缺少参数值")
+        return tokens[index + 1], index + 2
+
+    for prefix in (f"{long_option}=", f"{short_option}="):
+        if token.startswith(prefix):
+            return token[len(prefix):], index + 1
+
+    if token.startswith(short_option) and len(token) > len(short_option):
+        return token[len(short_option):], index + 1
+
+    return None, index
+
+
+def _parse_cookie_string(cookie_string):
+    """解析 Cookie 字符串，兼容分号后有无空格"""
+    parsed = {}
+    for item in re.split(r";\s*", cookie_string.strip()):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        if key.strip():
+            parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def convert(curl_command):
+    """提取 Bash/cURL 命令中的 headers 与 cookies"""
+    if not curl_command or not curl_command.strip():
+        raise ValueError("WXREAD_CURL_BASH 为空")
+
+    tokens = _parse_curl_args(curl_command)
+    headers_temp = {}
+    cookie_parts = []
+
+    index = 0
+    while index < len(tokens):
+        start_index = index
+        header_value, index = _take_option_value(tokens, index, "-H", "--header")
+        if header_value is not None:
+            name, separator, value = header_value.partition(":")
+            if not separator or not name.strip():
+                raise ValueError(f"WXREAD_CURL_BASH 中 Header 格式有误：{header_value}")
+            headers_temp[name.strip()] = value.strip()
+            continue
+
+        cookie_value, index = _take_option_value(tokens, index, "-b", "--cookie")
+        if cookie_value is not None:
+            cookie_parts.append(cookie_value)
+
+        if index == start_index:
+            index += 1
+
+    cookie_header = next(
+        (value for key, value in headers_temp.items() if key.lower() == "cookie"),
+        "",
+    )
+    if cookie_header:
+        cookie_parts.insert(0, cookie_header)
+
     cookies = {}
-    
-    # 从 -H 'Cookie: xxx' 提取
-    cookie_header = next((v for k, v in headers_temp.items() 
-                         if k.lower() == 'cookie'), '')
-    
-    # 从 -b 'xxx' 提取
-    cookie_b = re.search(r"-b '([^']+)'", curl_command)
-    cookie_string = cookie_b.group(1) if cookie_b else cookie_header
-    
-    # 解析 cookie 字符串
-    if cookie_string:
-        for cookie in cookie_string.split('; '):
-            if '=' in cookie:
-                key, value = cookie.split('=', 1)
-                cookies[key.strip()] = value.strip()
-    
-    # 移除 headers 中的 Cookie/cookie
-    headers = {k: v for k, v in headers_temp.items() 
-              if k.lower() != 'cookie'}
+    for cookie_string in cookie_parts:
+        cookies.update(_parse_cookie_string(cookie_string))
+
+    headers = {
+        key: value for key, value in headers_temp.items()
+        if key.lower() != "cookie"
+    }
+
+    if not headers and not cookies:
+        raise ValueError(
+            "WXREAD_CURL_BASH 未解析到 Header 或 Cookie，请确认复制的是 read 接口的 Bash/cURL 命令"
+        )
 
     return headers, cookies
+
+
+def validate_request_config():
+    """启动前校验请求配置，避免把配置缺失误报成密钥刷新失败"""
+    if not headers or not cookies:
+        raise ValueError(
+            "请求配置缺失：请设置 WXREAD_CURL_BASH，或在 config.py 中填写 headers 和 cookies"
+        )
 
 
 headers, cookies = convert(curl_str) if curl_str else (headers, cookies)

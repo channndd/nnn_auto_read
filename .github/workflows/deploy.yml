@@ -41,10 +41,21 @@ jobs:
       env:
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
         PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
+        PUSH_METHODS: ${{ secrets.PUSH_METHODS }}
         PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+        EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+        EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+        EMAIL_SMTP_USERNAME: ${{ secrets.EMAIL_SMTP_USERNAME }}
+        EMAIL_SMTP_PASSWORD: ${{ secrets.EMAIL_SMTP_PASSWORD }}
+        EMAIL_SMTP_PASSWORD_FILE: ${{ secrets.EMAIL_SMTP_PASSWORD_FILE }}
+        EMAIL_SMTP_USE_TLS: ${{ secrets.EMAIL_SMTP_USE_TLS }}
+        EMAIL_SMTP_USE_SSL: ${{ secrets.EMAIL_SMTP_USE_SSL }}
+        EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+        EMAIL_TO: ${{ secrets.EMAIL_TO }}
         READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
 
       run: |

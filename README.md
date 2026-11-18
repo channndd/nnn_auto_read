@@ -16,7 +16,7 @@
 - **多书籍阅读**：支持多本书籍配置，随机选择书籍和对应章节
 - **概率换书**：模拟真实用户阅读行为，支持固定次数或概率换书模式
 - **阅读波动**：自动在基础值上做百分比随机波动，每天阅读时长自然差异
-- **消息推送**：支持 PushPlus、Telegram、WxPusher 多种推送方式
+- **消息推送**：支持 PushPlus、Telegram、WxPusher、Email 多种推送方式
 - **Docker 部署**：内置 cron 定时任务，支持容器化部署
 
 ---
@@ -70,9 +70,23 @@ READ_NUM=60                    # 基础阅读总次数，程序自动 ±20% 波�
 BOOK_READ_COUNT=10             # 每本书读几次后换书，程序自动 ±30% 波动
 SWITCH_MODE=count              # 换书模式：count / prob
 
-# 推送配置（可选）
-PUSH_METHOD=pushplus           # 推送方式：pushplus / telegram / wxpusher
-PUSHPLUS_TOKEN=your_token      # PushPlus Token
+# 推送配置（可选）：单渠道或多个渠道同时推送
+PUSH_METHOD=email,telegram     # 支持 pushplus / telegram / wxpusher / email
+
+# Email 快速配置：使用 provider 预设
+EMAIL_PROVIDER=qq              # qq / 163 / gmail / outlook / custom
+EMAIL_SMTP_USERNAME=xxx@example.com
+EMAIL_SMTP_PASSWORD_FILE=/run/secrets/email_smtp_password
+# EMAIL_FROM 不填时默认使用 EMAIL_SMTP_USERNAME
+# EMAIL_TO 不填时默认使用 EMAIL_FROM；多个收件人用逗号分隔
+EMAIL_TO=receiver1@example.com,receiver2@example.com
+
+# 使用 custom 或覆盖 provider 默认值时，可显式填写：
+# EMAIL_SMTP_HOST=smtp.example.com
+# EMAIL_SMTP_PORT=587
+# EMAIL_SMTP_USE_TLS=true
+# EMAIL_SMTP_USE_SSL=false
+# 也可以暂时使用 EMAIL_SMTP_PASSWORD，但密码文件更安全
 ```
 
 ### 书籍配置
@@ -134,7 +148,7 @@ BOOK_READ_COUNTS = {
 nnn_auto_read/
 ├── main.py          # 主逻辑：字段拼接、模拟请求
 ├── config.py        # 配置：阅读次数、推送 Token、请求头/Cookie、书籍/章节
-├── push.py          # 推送模块：PushPlus / Telegram / WxPusher
+├── push.py          # 推送模块：多渠道 PushPlus / Telegram / WxPusher / Email
 ├── Dockerfile       # Docker 镜像构建
 └── README.md        # 项目说明
 ```

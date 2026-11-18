@@ -5,3 +5,12 @@ __pycache__/
 # Log files
 logs/
 *.log
+# Sensitive local configuration
+.env
+.env.*
+!.env.example
+secrets/
+*.secret
+*.pem
+email_password*
+*smtp_password*
