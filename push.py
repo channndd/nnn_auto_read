@@ -13,6 +13,7 @@ import requests
 
 from config import (
     EMAIL_FROM,
+    EMAIL_PROVIDER,
     EMAIL_SMTP_HOST,
     EMAIL_SMTP_PASSWORD,
     EMAIL_SMTP_PORT,
@@ -107,7 +108,43 @@ class PushNotification:
                     time.sleep(sleep_time)
         return False
 
-    def _send_email_once(self, content, is_success):
+    def _email_connection_configs(self):
+        """返回主 SMTP 连接和可能的备用连接，163 邮箱支持 587/TLS 与 465/SSL 自动切换"""
+        primary = {
+            "port": EMAIL_SMTP_PORT,
+            "use_tls": EMAIL_SMTP_USE_TLS,
+            "use_ssl": EMAIL_SMTP_USE_SSL,
+            "label": "当前配置",
+        }
+        configs = [primary]
+
+        if EMAIL_PROVIDER == "163":
+            if (
+                primary["port"] == 587
+                and primary["use_tls"]
+                and not primary["use_ssl"]
+            ):
+                configs.append({
+                    "port": 465,
+                    "use_tls": False,
+                    "use_ssl": True,
+                    "label": "备用配置 465/SSL",
+                })
+            elif (
+                primary["port"] == 465
+                and primary["use_ssl"]
+                and not primary["use_tls"]
+            ):
+                configs.append({
+                    "port": 587,
+                    "use_tls": True,
+                    "use_ssl": False,
+                    "label": "备用配置 587/TLS",
+                })
+
+        return configs
+
+    def _send_email_once(self, content, is_success, connection_config):
         """通过 SMTP 发送一封纯文本邮件"""
         required = {
             "EMAIL_SMTP_HOST": EMAIL_SMTP_HOST,
@@ -124,7 +161,10 @@ class PushNotification:
 
         if bool(EMAIL_SMTP_USERNAME) != bool(EMAIL_SMTP_PASSWORD):
             raise ValueError("EMAIL_SMTP_USERNAME 与 EMAIL_SMTP_PASSWORD 必须同时配置")
-        if EMAIL_SMTP_USE_TLS and EMAIL_SMTP_USE_SSL:
+
+        use_tls = connection_config["use_tls"]
+        use_ssl = connection_config["use_ssl"]
+        if use_tls and use_ssl:
             raise ValueError("EMAIL_SMTP_USE_TLS 与 EMAIL_SMTP_USE_SSL 不能同时开启")
 
         message = EmailMessage()
@@ -134,10 +174,11 @@ class PushNotification:
         message.set_content(content)
 
         context = ssl.create_default_context()
-        if EMAIL_SMTP_USE_SSL:
+        port = connection_config["port"]
+        if use_ssl:
             with smtplib.SMTP_SSL(
                 EMAIL_SMTP_HOST,
-                EMAIL_SMTP_PORT,
+                port,
                 timeout=30,
                 context=context,
             ) as server:
@@ -145,30 +186,61 @@ class PushNotification:
                     server.login(EMAIL_SMTP_USERNAME, EMAIL_SMTP_PASSWORD)
                 server.send_message(message)
         else:
-            with smtplib.SMTP(EMAIL_SMTP_HOST, EMAIL_SMTP_PORT, timeout=30) as server:
-                if EMAIL_SMTP_USE_TLS:
+            with smtplib.SMTP(EMAIL_SMTP_HOST, port, timeout=30) as server:
+                if use_tls:
                     server.starttls(context=context)
                 if EMAIL_SMTP_USERNAME:
                     server.login(EMAIL_SMTP_USERNAME, EMAIL_SMTP_PASSWORD)
                 server.send_message(message)
 
     def push_email(self, content, is_success=True):
-        """Email 消息推送"""
-        attempts = 3
-        for attempt in range(attempts):
+        """Email 消息推送，连接异常时自动尝试备用端口和加密方式"""
+        connection_errors = (
+            smtplib.SMTPServerDisconnected,
+            smtplib.SMTPConnectError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        )
+        configs = self._email_connection_configs()
+        last_error = None
+
+        for index, connection_config in enumerate(configs):
+            label = connection_config["label"]
             try:
-                self._send_email_once(content, is_success)
-                logger.info("✅ 邮件发送成功")
-                return True
-            except ValueError as e:
-                logger.error("❌ 邮件配置有误: %s", e)
+                self._send_email_once(content, is_success, connection_config)
+            except ValueError as exc:
+                logger.error("❌ 邮件配置有误: %s", exc)
                 return False
-            except (smtplib.SMTPException, OSError) as e:
-                logger.error("❌ 邮件发送失败: %s", e)
-                if attempt < attempts - 1:
-                    sleep_time = 2 ** attempt
-                    logger.info("将在 %d 秒后重试...", sleep_time)
-                    time.sleep(sleep_time)
+            except connection_errors as exc:
+                last_error = exc
+                logger.error(
+                    "❌ 邮件发送失败（%s，%s:%s）: %s",
+                    label,
+                    EMAIL_SMTP_HOST,
+                    connection_config["port"],
+                    exc,
+                )
+                if index + 1 < len(configs):
+                    fallback = configs[index + 1]
+                    logger.info(
+                        "尝试备用 SMTP 连接：%s:%s（TLS=%s，SSL=%s）",
+                        EMAIL_SMTP_HOST,
+                        fallback["port"],
+                        fallback["use_tls"],
+                        fallback["use_ssl"],
+                    )
+                continue
+            except smtplib.SMTPException as exc:
+                last_error = exc
+                logger.error("❌ 邮件发送失败（%s）: %s", label, exc)
+                return False
+            else:
+                logger.info("✅ 邮件发送成功（%s）", label)
+                return True
+
+        if last_error:
+            logger.error("❌ 所有 SMTP 连接方式均失败: %s", last_error)
         return False
 
 
